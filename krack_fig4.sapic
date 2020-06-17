@@ -1,0 +1,296 @@
+/*******************************************************************************
+	TITLE
+	AUTHORS
+	
+	Attack against the 4-way handshake, when the supplicant when (victim) still
+	accepts plaintext retransmissions of message 3 if a PTK is installed.
+	
+	Notation:
+	
+	pmk = Pairwise Master Key
+	ptk = Pairwise Transient Key, composed of:
+		kck = Key Confirmation Key
+		kek = Key Encryption Key
+		tk = Temporal Key
+	gtk = Group Transient Key
+	
+	A_  = Events only in authenticator process
+	S_  = Events only in supplicant process
+	
+*******************************************************************************/
+
+theory Krack_fig4_006
+begin
+
+builtins:
+	symmetric-encryption,
+	multiset
+
+functions:
+	true/0,
+	CalcPTK/1,
+	mic/2,
+	kck/1,
+	kek/1,
+	tk/1,
+	verifyMic/3
+
+equations: 
+	verifyMic(mic(m,k), m, k) = true
+
+
+
+let Supplicant =
+	new ~S_id;
+	out(~S_id);
+
+	!(
+		// Initial 4-way handshake
+		new ~tid;
+		
+		in(A_id);
+		
+		let pat_msg1_contents = <'Header1', r, ANonce> in
+		in(pat_msg1_contents);
+		
+		new ~SNonce;
+		let tptk = CalcPTK(<~pmk, ANonce, ~SNonce, A_id, ~S_id>) in
+		event S_ComputesPTK(~tid, tptk);
+		
+		let msg2_contents = <'Header2', r, ~SNonce> in
+		event Running(~S_id, A_id, msg2_contents);
+		out(<msg2_contents, mic(msg2_contents, kck(tptk))>);
+		
+		let msg3_contents = <'Header3', r+'1', ANonce, senc(gtk, kek(tptk))> in
+		in(<msg3_contents, mic(msg3_contents, kck(tptk))>);
+		event Commit(~S_id, A_id, msg3_contents);
+		
+		let ptk = tptk in
+		
+		let msg4_contents = <'Header4', r+'1'> in
+		event Running(~S_id, A_id, msg4_contents);
+		out(<msg4_contents, mic(msg4_contents, kck(ptk))>);
+
+		event S_InstallsPtk(~S_id, ptk); // MLME-SETKEYS.request
+		event S_InstallsGtk(~S_id, gtk); // MLME-SETKEYS.request
+		
+		((
+			event S_Branch1()
+		) +
+		(
+			let msg3_rtx_contents = <'Header3', r+'1'+'1', ANonce, senc(gtk2, kek(tptk))> in
+			in(<msg3_rtx_contents, mic(msg3_rtx_contents, kck(tptk))>);
+			event Commit(~S_id,A_id,msg3_rtx_contents);
+		
+			let ptk = tptk in
+				
+																 
+			
+			// Uncomment to apply countermeasure
+			//if ~ptk2 = ~ptk1 then
+			//	0
+			//else
+				let msg4_rtx_contents = <'Header4', r+'1'+'1'> in
+				event FinishLast(~S_id, A_id, msg4_rtx_contents);
+				event Running(~S_id, A_id, msg4_rtx_contents);
+				out(senc(<msg4_rtx_contents, mic(msg4_rtx_contents, kck(ptk))>,tk(ptk)));
+			
+				event S_InstallsPtk(~S_id, ptk); // MLME-SETKEYS.request
+				event S_InstallsGtk(~S_id, gtk2); // MLME-SETKEYS.request
+				
+				event S_Branch2()
+		))
+	)
+	
+
+let Authenticator =
+	new ~A_id;
+	out(~A_id);
+	
+	!(
+		// Initial 4-way handshake
+		
+		new ~r;
+		new ~ANonce;
+		
+		in(S_id);
+		
+		let pat_msg1_contents = <'Header1', ~r, ~ANonce> in
+		event StartFirst(S_id, ~A_id, pat_msg1_contents);
+		out(pat_msg1_contents);
+
+		let ptk = CalcPTK(<~pmk, ~ANonce, SNonce, ~A_id, S_id>) in
+		let msg2_contents = <'Header2', ~r, SNonce> in
+		in(<msg2_contents, mic(msg2_contents, kck(ptk))>);
+		event Commit(S_id, ~A_id, msg2_contents);
+		
+		new ~gtk;
+		event A_GeneratesGtk(~gtk);
+		event A_InstallsGtk(~gtk); // MLME-SETKEYS.request
+
+		let msg3_contents = <'Header3', ~r+'1', ~ANonce, senc(~gtk, kek(ptk))> in
+		event Running(S_id, ~A_id, msg3_contents);
+		out(<msg3_contents, mic(msg3_contents, kck(ptk))>);
+
+		((
+			let msg4_contents = <'Header4', ~r+'1'> in
+			in(<msg4_contents, mic(msg4_contents, kck(ptk))>);
+			event Commit(S_id, ~A_id, msg4_contents);
+
+			event A_InstallsPtk(ptk); // MLME-SETKEYS.request
+
+			event A_Branch1()
+		)+
+		(
+
+			let msg3_rtx_contents = <'Header3', ~r+'1'+'1', ~ANonce, senc(~gtk, kek(ptk))> in
+			event Running(S_id, ~A_id, msg3_rtx_contents);
+			out(<msg3_rtx_contents, mic(msg3_rtx_contents, kck(ptk))>);
+													  
+			
+			// Msg4(r+1) could have been received here (ignored)
+								 
+			
+													  
+			let msg4_rtx_contents = <'Header4', ~r+'1'+'1'> in
+			in(senc(<msg4_rtx_contents, mic(msg4_rtx_contents, kck(ptk))>,tk(ptk)));
+			event Commit(S_id, ~A_id, msg4_rtx_contents);
+
+			// Msg4(r+1) could have been received here (ignored)
+			
+			event A_InstallsPtk(ptk); // MLME-SETKEYS.request
+
+			event A_Branch2()
+		))
+	)
+
+
+// Main process starts here
+new ~pmk; (!Supplicant || Authenticator)
+
+
+// Uncomment to apply countermeasure.
+//restriction CountermeasureKrackPtk:
+//	"All id ptk #i #j. S_InstallsPtk(id, ptk)@i & S_InstallsPtk(id, ptk)@j ==> (#i=#j)"
+
+lemma CorrectnessS1:
+exists-trace
+	"Ex #i. S_Branch1()@i"
+
+// This lemma is expected to be falisified after activating countermeasure.
+lemma CorrectnessS2:
+exists-trace
+	"Ex #i. S_Branch2()@i"		
+	
+lemma CorrectnessA1:
+exists-trace
+	"Ex #i. A_Branch1()@i"
+
+lemma CorrectnessA2:
+exists-trace
+	"Ex #i. A_Branch2()@i"
+
+// The KRACK attack does not exist.
+lemma NoKrackPtk:
+	"All id ptk #i. S_InstallsPtk(id, ptk)@i ==> not(Ex #j. S_InstallsPtk(id, ptk)@j & (j<i))"
+
+// PTK is secret - It is not possible that the PTK has been installed and the adversary knows it.
+lemma SecretPtk:
+all-traces
+	"All id ptk #i. S_InstallsPtk(id, ptk)@i  ==> (not (Ex #j. K(ptk)@j))"
+
+// GTK is secret - It is not possible that the GTK has been installed and the adversary knows it.
+lemma SecretGtk:
+all-traces
+	"All id gtk #i. S_InstallsGtk(id, gtk)@i  ==> (not (Ex #j. K(gtk)@j))"
+
+// GTK accepted by one of the supplicants is the GTK calculated and forwarded by the authenticator.
+lemma ReceivedGtkSameAsGenerated:
+all-traces
+	"All S gtk #i. S_InstallsGtk(S, gtk)@i  ==> (Ex #j. A_GeneratesGtk(gtk)@j & (j<i))" 
+
+// PTK is fresh.
+lemma FreshPtk: 
+all-traces
+	"All tid1 tid2 ptk #i #j. S_ComputesPTK(tid1, ptk)@i & S_ComputesPTK(tid2, ptk)@j ==> (tid1=tid2)"
+
+lemma injective_authentication:
+  all-traces
+  "All S A k #i.
+    (Commit( S,A, k ) @ i) ==>
+    ((Ex #j.
+       (Running( S,A, k ) @ j) & (j<i))
+		& 
+       (All #i2. (Commit(S,A,k) @ #i2) ==>(#i = #i2)))"
+
+lemma non_injective_authentication:
+  all-traces
+  "All S A k #i.
+    (Commit( S,A, k ) @ i) ==>
+    ((Ex #j.
+       (Running( S,A, k ) @ j) & (j<i)))"
+
+lemma mutual_authentication:
+  all-traces
+  "All S A m1 #i.
+    (FinishLast( S,A,m1 ) @ i) ==>
+    ((Ex m2 #j.
+       (StartFirst( S,A,m2) @ j) & (j<i))
+    & 
+     (All #i2. (FinishLast(S,A,m1) @ #i2) ==>(#i = #i2)))"
+		
+end
+
+
+
+
+// ==============================================================================
+// summary of summaries:
+//
+// analyzed: krack_fig4_006.sapic
+//
+  // CorrectnessS1 (exists-trace): verified (11 steps)
+  // CorrectnessS2 (exists-trace): verified (13 steps)
+  // CorrectnessA1 (exists-trace): verified (12 steps)
+  // CorrectnessA2 (exists-trace): verified (14 steps)
+  // NoKrackPtk (all-traces): falsified - found trace (16 steps)
+  // SecretPtk (all-traces): verified (77 steps)
+  // SecretGtk (all-traces): verified (127 steps)
+  // ReceivedGtkSameAsGenerated (all-traces): verified (35 steps)
+  // FreshPtk (all-traces): verified (4 steps)
+  // injective_authentication (all-traces): verified (158 steps)
+  // non_injective_authentication (all-traces): verified (110 steps)
+  // mutual_authentication (all-traces): verified (2197 steps)
+//
+// ==============================================================================
+// real    5m51.116s
+// user    9m40.306s
+// sys     1m30.152s
+
+
+
+// ==============================================================================
+// summary of summaries:
+//
+// analyzed: krack_fig4_007.sapic
+//
+  // CorrectnessS1 (exists-trace): verified (11 steps)
+  // CorrectnessS2 (exists-trace): falsified - no trace found (2 steps)
+  // CorrectnessA1 (exists-trace): verified (12 steps)
+  // CorrectnessA2 (exists-trace): verified (14 steps)
+  // NoKrackPtk (all-traces): verified (2 steps)
+  // SecretPtk (all-traces): verified (22 steps)
+  // SecretGtk (all-traces): verified (42 steps)
+  // ReceivedGtkSameAsGenerated (all-traces): verified (14 steps)
+  // FreshPtk (all-traces): verified (4 steps)
+  // injective_authentication (all-traces): verified (158 steps)
+  // non_injective_authentication (all-traces): verified (110 steps)
+  // mutual_authentication (all-traces): verified (2197 steps)
+//
+// ==============================================================================
+// real    3m42.123s
+// user    7m7.445s
+// sys     1m14.682s
+
+
+

@@ -1,0 +1,206 @@
+/*******************************************************************************
+	Formal Modeling of KRACK attacks and verification of mitigations
+	
+	 Downgrade attack on the TP-Link WR841P to force encryption of theGroup Key
+	 (GTK) with RC4
+	
+	Notation:
+	
+	pmk = Pairwise Master Key
+	ptk = Pairwise Transient Key, composed of:
+		kck = Key Confirmation Key
+		kek = Key Encryption Key
+		tk = Temporal Key
+	gtk = Group Transient Key
+	
+	cs = Cipher suite
+	
+*******************************************************************************/
+
+theory chris_fig4
+begin
+
+builtins:
+	symmetric-encryption,
+	multiset
+
+functions:
+	true/0,
+	CalcPTK/1,
+	mic/2,
+	kck/1,
+	kek/1,
+	tk/1,
+	verifyMic/3
+
+equations: 
+	verifyMic(mic(m,k), m, k) = true
+
+predicates:
+	Equal(x,y) <=> x = y
+	
+
+let Supplicant =
+	new S_id;
+	out(S_id);
+
+	!(
+		out(<'AuthRequest', S_id>);
+		in(<'AuthResponse', S_id, cs>);
+		
+		out(<'AssociationRequest', S_id, cs>);
+		in(<'AssociationResponse', S_id, cs>);
+
+
+		//4-way handshake
+		
+		event SupplicantStart(S_id, cs);
+		
+		let pat_msg1_contents = <'Header1', r, ANonce, cs> in
+		in(pat_msg1_contents);
+		new ~tid;
+
+		new ~SNonce;
+		let tptk = CalcPTK(<pmk, ANonce, ~SNonce>) in
+		event ComputePTK(~tid,tptk);
+		
+		let msg2_contents = <'Header2', r, ~SNonce, cs> in
+		out(<msg2_contents, mic(msg2_contents, <cs, kck(tptk)>)>);
+
+		let msg3_contents = <'Header3', r+'1', ANonce, cs, senc(gtk,  <cs, kek(tptk)>)> in
+		in(<msg3_contents, mic(msg3_contents,  <cs, kck(tptk)>)>);
+
+		let ptk = tptk in
+		
+		let msg4_contents = <'Header4', r+'1', cs> in
+		out(<msg4_contents, mic(msg4_contents,  <cs, kck(ptk)>)>);
+
+		event Debug1();
+
+		event InstallS(S_id, ptk, gtk);
+		event SuplicantEnd(S_id, cs, ANonce, ~SNonce, ptk, gtk)
+	)
+	
+
+let Authenticator =
+	!(
+		new ~runId;
+		in(<'AuthRequest', S_id>);
+		out(<'AuthResponse', S_id, 'CCMP'>);
+		
+		in(<'AssociationRequest', S_id, 'CCMP'>);
+		out(<'AssociationResponse', S_id, 'CCMP'>);
+
+		//4-way handshake
+		
+		event AuthenticatorStart(~runId, 'CCMP');
+	
+		new ~r;
+		new ~ANonce;
+		
+		let pat_msg1_contents = <'Header1', ~r, ~ANonce, 'CCMP'> in
+		out(pat_msg1_contents);
+
+		let ptk = CalcPTK(<pmk, ~ANonce, SNonce>) in
+		
+		//let cs = 'CCMP' in
+		let msg2_contents = <'Header2', ~r, SNonce, cs> in // Authenticator allows switching cipher suite in mid-protocol.
+		in(<msg2_contents, mic(msg2_contents,  <cs, kck(ptk)>)>);
+		
+		new ~gtk;
+		event InstallAgtk(~gtk);
+
+		let msg3_contents = <'Header3', ~r+'1', ~ANonce, cs, senc(~gtk,  <cs, kek(ptk)>)> in
+		out(<msg3_contents, mic(msg3_contents,  <cs, kck(ptk)>)>);
+
+		event AuthenticatorSentMsg3(~runId, cs);
+
+		let msg4_contents = <'Header4', ~r+'1', cs> in
+		in(<msg4_contents, mic(msg4_contents,  <cs, kck(ptk)>)>);
+
+
+		event Debug2();
+		
+		event InstallAptk(~runId, cs, ptk);
+		event AuthenticatorEnd(cs, ~ANonce, SNonce, ptk, ~gtk)
+	)
+
+	
+new pmk; (!Supplicant || Authenticator)
+
+
+// Uncomment to apply countermeasure
+//restriction Countermeasure1:
+//	"All S ptk1 ptk2 gtk1 gtk2 #i #j. InstallS(S, ptk1, gtk1)@i & InstallS(S, ptk2, gtk2)@j ==> not(ptk1 = ptk2)"
+
+// Uncomment to apply countermeasure
+//restriction Countermeasure2:
+//	"All S ptk1 ptk2 gtk1 gtk2 #i #j. InstallS(S, ptk1, gtk1)@i & InstallS(S, ptk2, gtk2)@j ==> not(gtk1 = gtk2)"
+
+lemma Debug1:
+exists-trace
+	"Ex #i. Debug1()@i"
+	
+lemma Debug2:
+exists-trace
+	"Ex #i. Debug2()@i"
+
+lemma Downgrade:
+exists-trace
+	"Ex gtk kek #i #j. InstallAgtk(gtk)@i & K(senc(gtk,  <'TKIP', kek>))@j & i < j"
+/*
+lemma Downgrade2:
+	"All gtk #i. InstallAgtk(gtk)@i ==> not(Ex kek #j. K(senc(gtk,  <'TKIP', kek>))@j & i < j)" */
+
+/* For all execution of the protocol, If an authenticator starts with a ciphersuite, it must be the case 
+that this CS is also used in subsequent messages*/
+lemma Downgrade3:
+	"All runId cs1 cs2 #i #j. ((AuthenticatorSentMsg3(runId, cs2)@i & AuthenticatorStart(runId, cs1)@j)) ==> (cs1 = cs2)"
+
+lemma Correctness1:
+exists-trace
+	"Ex a b c #i. InstallS(a,b,c)@i" 
+
+lemma Correctness3:
+exists-trace
+	"Ex a #i. InstallAgtk(a)@i" 
+
+lemma Correctness4:
+exists-trace
+	"Ex runId cs a #i. InstallAptk(runId, cs, a)@i"
+	
+lemma Correctness5:
+exists-trace
+	"Ex S_id cs ANonce SNonce ptk gtk #i. SuplicantEnd(S_id, cs, ANonce, SNonce, ptk, gtk)@i"
+	
+lemma Correctness6:
+exists-trace
+	"Ex cs ANonce SNonce ptk gtk #i. AuthenticatorEnd(cs, ANonce, SNonce, ptk, gtk)@i"
+	/* The KRACK attack does not exist */
+
+
+/* The KRACK attack does not exist */
+lemma NoKrack:
+	"All S ptk gtk1 #i . InstallS(S, ptk, gtk1)@i ==> not(Ex gtk2 #j. InstallS(S, ptk, gtk2)@j & j < i)" 
+
+/* PTK is secret - It is not possible that the ptk has been installed  and the adversary knows it */
+lemma SecretPtk:
+ all-traces
+    "All S ptk gtk #i. InstallS(S,ptk,gtk)@i  ==> (not (Ex #j. K(ptk)@j))"
+
+/* PTK is fresh*/
+lemma FreshPtk: 
+ all-traces
+    "All tid1 tid2 ptk #i #j. ComputePTK(tid1,ptk)@i & ComputePTK(tid2,ptk)@j ==> (tid1=tid2)"
+
+/* GTKis secret - It is not possible that the gtk has been installed  and the adversary knows it */
+lemma SecretGtk:
+ all-traces
+    "All S ptk gtk #i. InstallS(S,ptk,gtk)@i  ==> (not (Ex #j. K(gtk)@j))"
+
+
+/* GTK accepted by one of the parties is the GTK calculated and forwarded by another */
+lemma gtkSame:
+ all-traces
+    "All S ptk gtk #i. InstallS(S,ptk,gtk)@i  ==> (Ex #j. InstallAgtk(gtk)@j & (j < i))"
+end
