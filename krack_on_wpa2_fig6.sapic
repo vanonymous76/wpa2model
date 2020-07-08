@@ -345,20 +345,6 @@ all-traces
 		& not(Ex X2 Y2 #i2. Commit(X2, Y2, t)@i2 & not(#i2=#i))
 		)"
 
-/*
-lemma MessageOrdering:
-all-traces
-	"(All X Y MessageN r m #i #j.
-		Send(X, Y, MessageN, r, m)@i & Receive(X, Y, MessageN, r, m)@j ==> (i<j))
-	&(All X Y r m #i1. 
-		Send(X, Y, 'Message2', r, m)@i1 ==> (Ex m1 #j1. Receive(Y, X, 'Message1', r, m1)@j1 & (j1<i1)))
-	&(All X Y r m #i2.
-		Send(X, Y, 'Message3', r, m)@i2 ==> (Ex r1 m1 #j2. Receive(Y, X, 'Message2', r1, m1)@j2 & (j2<i2)))
-	&(All X Y r m #i3.
-		Send(X, Y, 'Message4', r, m)@i3 ==> (Ex m1 #j3. Receive(Y, X, 'Message3', r, m1)@j3 & (j3<i3)))
-	"
-*/
-
 end
 
 
