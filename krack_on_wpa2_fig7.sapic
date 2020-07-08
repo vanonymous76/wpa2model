@@ -1,0 +1,310 @@
+/*******************************************************************************
+	TITLE
+	AUTHORS
+	
+	Attack against the group key handshake, when the authenticator
+	immediately installs the GTK after sending a Group Message 1 to all clients.
+	
+	Notation:
+	
+	pmk = Pairwise Master Key
+	ptk = Pairwise Transient Key, composed of:
+		kck = Key Confirmation Key
+		kek = Key Encryption Key
+		tk = Temporal Key
+	gtk = Group Transient Key
+	
+	A_  = Events only in authenticator process
+	S_  = Events only in supplicant process
+	
+*******************************************************************************/
+
+theory Krack_fig7_015
+begin
+
+builtins:
+	symmetric-encryption,
+	multiset
+
+functions:
+	true/0,
+	CalcPTK/1,
+	mic/2,
+	kck/1,
+	kek/1,
+	tk/1,
+	verifyMic/3
+
+equations: 
+	verifyMic(mic(m,k), m, k) = true
+
+
+
+let Supplicant =
+	new ~S_id;
+	out(~S_id);
+	
+	!(
+		// Initial 4-way handshake
+		new ~tid;
+		
+		in(A_id);
+		
+		let pat_msg1_contents = <'Header1', r, ANonce> in
+		in(pat_msg1_contents);
+		event Receive(A_id, ~S_id, 'Message1', r, pat_msg1_contents);
+
+
+		new ~SNonce;
+		let tptk = CalcPTK(<~pmk, ANonce, ~SNonce, A_id, ~S_id>) in
+		event S_ComputesPTK(~tid, tptk);
+		
+		let msg2_contents = <'Header2', r, ~SNonce> in
+		event Send(~S_id, A_id, 'Message2', r, msg2_contents);
+		out(<msg2_contents, mic(msg2_contents, kck(tptk))>);
+		
+		let msg3_contents = <'Header3', r+'1', ANonce, senc(gtk, kek(tptk))> in
+		in(<msg3_contents, mic(msg3_contents, kck(tptk))>);
+		event Receive(A_id, ~S_id, 'Message3', r+'1', msg3_contents);
+
+		let ptk = tptk in
+
+		event Running(~S_id, A_id, <~SNonce, ANonce, r+'1', ptk, gtk>);
+		
+		let msg4_contents = <'Header4', r+'1'> in
+		event Send(~S_id, A_id, 'Message4', r+'1', msg4_contents);
+		out(<msg4_contents, mic(msg4_contents, kck(ptk))>);
+
+		event S_InstallsPtk(~S_id, ptk); // MLME-SETKEYS.request
+		event S_InstallsGtk(~S_id, gtk); // MLME-SETKEYS.request
+		
+		// Group rekey
+		!(
+			let group_msg1_contents = <'GrkHeader1', r2, senc(gtk2, kek(ptk))> in
+			let m = <group_msg1_contents, mic(group_msg1_contents, kck(ptk))> in
+			in(senc(m, tk(ptk)));
+			event Receive(A_id, ~S_id, 'Message1', r2, group_msg1_contents);
+			event ReceivesCiphertext(~S_id, m, tk(ptk));			
+
+			event Running(~S_id, A_id, <~SNonce, ANonce, r2, ptk, gtk2>);
+
+			event S_ReplayCtr(r2);
+			event S_AcceptsMessage(~S_id, m);
+			
+			event S_InstallsGtk(~S_id, gtk2); // MLME-SETKEYS.request
+		
+			let group_msg2_contents = <'GrkHeader2', r2> in
+			let m = <group_msg2_contents, mic(group_msg2_contents, kck(ptk))> in
+			event Send(~S_id, A_id, 'Message2', r2, group_msg2_contents);
+			event SendsCiphertext(~S_id, m, tk(ptk));
+			out(senc(m, tk(ptk)));
+			
+			event S_Branch1()
+		)
+	)
+	
+
+let Authenticator =
+	new ~A_id;
+	out(~A_id);
+	
+	!(
+		// Initial 4-way handshake
+		
+		new ~r;
+		new ~ANonce;
+		
+		in(S_id);
+		
+		let pat_msg1_contents = <'Header1', ~r, ~ANonce> in
+		event Send(~A_id, S_id, 'Message1', ~r, pat_msg1_contents);
+		out(pat_msg1_contents);
+
+		let ptk = CalcPTK(<~pmk, ~ANonce, SNonce, ~A_id, S_id>) in
+		let msg2_contents = <'Header2', ~r, SNonce> in
+		in(<msg2_contents, mic(msg2_contents, kck(ptk))>);
+		event Receive(S_id, ~A_id, 'Message2', ~r, msg2_contents);
+		
+		new ~gtk;
+		event A_GeneratesGtk(~gtk);
+		event A_InstallsGtk(~gtk); // MLME-SETKEYS.request
+
+		let msg3_contents = <'Header3', ~r+'1', ~ANonce, senc(~gtk, kek(ptk))> in
+		event Send(~A_id, S_id, 'Message3', ~r+'1', msg3_contents);
+		out(<msg3_contents, mic(msg3_contents, kck(ptk))>);
+		
+		let msg4_contents = <'Header4', ~r+'1'> in
+		in(<msg4_contents, mic(msg4_contents, kck(ptk))>);
+		event Receive(S_id, ~A_id, 'Message4', ~r+'1', msg4_contents);		
+			
+		event A_InstallsPtk(ptk); // MLME-SETKEYS.request
+
+		event Commit(~A_id, S_id, <SNonce, ~ANonce, ~r+'1', ptk, ~gtk>);
+		
+		// Group rekey 
+		!(
+			new ~gtk2;
+			event A_GeneratesGtk(~gtk2);
+			
+			let group_msg1_contents = <'GrkHeader1', ~r+'1'+'1', senc(~gtk2, kek(ptk))> in
+			let m = <group_msg1_contents, mic(group_msg1_contents, kck(ptk))> in
+			event SendsCiphertext(~A_id, m, tk(ptk));
+			event Send(~A_id, S_id, 'Message1', ~r+'1'+'1', group_msg1_contents);
+			out(senc(m, tk(ptk)));
+			
+			event A_InstallsGtk(~gtk2); // MLME-SETKEYS.request
+
+			((
+				let group_msg2_contents = <'GrkHeader2', ~r+'1'+'1'> in
+				let m = <group_msg2_contents, mic(group_msg2_contents, kck(ptk))> in
+				in(senc(m, tk(ptk)));
+				event Receive(S_id, ~A_id, 'Message2', ~r+'1'+'1', group_msg2_contents);
+				event ReceivesCiphertext(~A_id, m, tk(ptk));
+		
+				//event Commit(~A_id, S_id, <SNonce, ~ANonce, ~r+'1'+'1', ptk, ~gtk2>);
+				event A_Branch1()
+			) +
+			(
+				let group_msg1_rtx_contents = <'GrkHeader1', ~r+'1'+'1'+'1', senc(~gtk2, kek(ptk))> in
+				let m = <group_msg1_rtx_contents, mic(group_msg1_rtx_contents, kck(ptk))> in
+				event SendsCiphertext(~A_id, m, tk(ptk));
+				event Send(~A_id, S_id, 'Message1', ~r+'1'+'1'+'1', group_msg1_rtx_contents);
+				out(senc(m, tk(ptk)));
+
+				let group_msg2_rtx_contents = <'GrkHeader2', ~r+'1'+'1'+'1'> in
+				let m = <group_msg2_rtx_contents, mic(group_msg2_rtx_contents, kck(ptk))> in
+				in(senc(m, tk(ptk)));
+				event Receive(S_id, ~A_id, 'Message2', ~r+'1'+'1'+'1', group_msg2_rtx_contents);
+				event ReceivesCiphertext(~A_id, m, tk(ptk));
+
+				//event Commit(~A_id, S_id, <SNonce, ~ANonce, ~r+'1'+'1'+'1', ptk, ~gtk2>);
+				event A_Branch2()
+			))
+		)
+	)
+
+
+// Main process starts here
+new ~pmk; (!Supplicant || Authenticator)
+
+
+// Uncomment to apply countermeasure for GTK.
+/*
+restriction CountermeasureKrackGtk:
+	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
+*/
+restriction RestrictionCtr:
+	"All r r2 #i #j. S_ReplayCtr(r)@i & S_ReplayCtr(r2)@j & (i<j) ==> (Ex x. r+x=r2)"
+
+lemma DataConfProtocolInvariant [sources]:
+	"All id1 m k #i. ReceivesCiphertext(id1, m, k)@i ==> 
+		( (Ex #j. KU(m)@j & (j<i))
+		| (Ex id2 #j. SendsCiphertext(id2, m, k)@j) 
+		)"
+
+lemma CorrectnessS1:
+exists-trace
+	"Ex #i. S_Branch1()@i"
+	
+lemma CorrectnessA1:
+exists-trace
+	"Ex #i. A_Branch1()@i"
+
+lemma CorrectnessA2:
+exists-trace
+	"Ex #i. A_Branch2()@i"
+
+// The supplicant will not accept replayed messages
+lemma CorrectnessNoReplay:
+	"All id m #i #j. S_AcceptsMessage(id, m)@i & S_AcceptsMessage(id, m)@j ==> (#i=#j)"
+
+lemma NoKrackGtk:
+	"All id gtk #i. S_InstallsGtk(id, gtk)@i ==> not(Ex #j. S_InstallsGtk(id, gtk)@j & (j<i))"
+
+// PTK is secret - It is not possible that the PTK has been installed and the adversary knows it.
+lemma SecretPtk:
+all-traces
+	"All id ptk #i. S_InstallsPtk(id, ptk)@i  ==> (not (Ex #j. K(ptk)@j))"
+
+// GTK is secret - It is not possible that the GTK has been installed and the adversary knows it.
+lemma SecretGtk:
+all-traces
+	"All id gtk #i. S_InstallsGtk(id, gtk)@i  ==> (not (Ex #j. K(gtk)@j))"
+
+// GTK accepted by one of the supplicants is the GTK calculated and forwarded by the authenticator.
+lemma ReceivedGtkSameAsGenerated:
+all-traces
+	"All S gtk #i. S_InstallsGtk(S, gtk)@i  ==> (Ex #j. A_GeneratesGtk(gtk)@j & (j<i))" 
+
+// PTK is fresh.
+lemma FreshPtk: 
+all-traces
+	"All tid1 tid2 ptk #i #j. S_ComputesPTK(tid1, ptk)@i & S_ComputesPTK(tid2, ptk)@j ==> (tid1=tid2)"
+
+// Agreement [Lowe97]
+//  - Injective (assumed from definition)
+//  - Full, t = <X.Nonce, Y.Nonce, ptk, gtk> 
+//  - Mutual
+lemma Agreement:
+all-traces
+	"All X Y t #i. Commit(X, Y, t)@i ==>
+		( (Ex #j. Running(Y, X, t)@j & (j<i))
+		& not(Ex X2 Y2 #i2. Commit(X2, Y2, t)@i2 & not(#i2=#i))
+		)"
+
+
+end
+
+
+/*
+Without countermeasure
+==============================================================================
+summary of summaries:
+
+analyzed: krack_fig7_015.sapic
+
+  DataConfProtocolInvariant (all-traces): verified (37 steps)
+  CorrectnessS1 (exists-trace): verified (13 steps)
+  CorrectnessA1 (exists-trace): verified (14 steps)
+  CorrectnessA2 (exists-trace): verified (14 steps)
+  CorrectnessNoReplay (all-traces): verified (16 steps)
+  NoKrackGtk (all-traces): falsified - found trace (19 steps)
+  SecretPtk (all-traces): verified (19 steps)
+  SecretGtk (all-traces): verified (263 steps)
+  ReceivedGtkSameAsGenerated (all-traces): verified (82 steps)
+  FreshPtk (all-traces): verified (4 steps)
+  Agreement (all-traces): verified (26 steps)
+
+==============================================================================
+
+real    24m13.961s
+user    51m20.976s
+sys     8m48.735s
+
+*/
+
+
+/*
+With countermeasure
+==============================================================================
+summary of summaries:
+analyzed: krack_fig7_015.sapic
+
+  DataConfProtocolInvariant (all-traces): verified (37 steps)
+  CorrectnessS1 (exists-trace): verified (13 steps)
+  CorrectnessA1 (exists-trace): verified (14 steps)
+  CorrectnessA2 (exists-trace): verified (14 steps)
+  CorrectnessNoReplay (all-traces): verified (16 steps)
+  NoKrackGtk (all-traces): verified (2 steps)
+  SecretPtk (all-traces): verified (19 steps)
+  SecretGtk (all-traces): verified (258 steps)
+  ReceivedGtkSameAsGenerated (all-traces): verified (80 steps)
+  FreshPtk (all-traces): verified (4 steps)
+  Agreement (all-traces): verified (26 steps)
+
+==============================================================================
+
+real    5m20.831s
+user    11m36.875s
+sys     2m12.963s
+*/
