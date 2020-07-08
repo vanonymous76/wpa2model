@@ -1,0 +1,376 @@
+/*******************************************************************************
+	Modelling and Analysis of 802.11 4-Way Handshake Attacks and
+	Security Properties
+	AUTHORS
+	
+	Attack against the 4-way handshake, when the supplicant when (victim) still
+	accepts plaintext retransmissions of message 3 if a PTK is installed.
+	
+	Notation:
+	
+	pmk = Pairwise Master Key
+	ptk = Pairwise Transient Key, composed of:
+		kck = Key Confirmation Key
+		kek = Key Encryption Key
+		tk = Temporal Key
+	gtk = Group Temporal Key
+	
+	A_  = Events only in authenticator process
+	S_  = Events only in supplicant process
+	
+*******************************************************************************/
+
+theory Krack_fig4
+begin
+
+builtins:
+	symmetric-encryption,
+	multiset
+
+functions:
+	true/0,
+	CalcPtk/1,
+	mic/2,
+	kck/1,
+	kek/1,
+	tk/1,
+	verifyMic/3
+
+equations: 
+	verifyMic(mic(m,k), m, k) = true
+
+
+
+let Supplicant =
+	new ~S_id;
+	out(~S_id);
+
+	!(
+		out(<'AuthRequest', ~S_id>);
+		in(<'AuthResponse', ~S_id, cs>);
+		
+		out(<'AssociationRequest', ~S_id, cs>);
+		in(<'AssociationResponse', ~S_id, cs>);
+
+		event S_HasPmk(~S_id, ~pmk);
+		
+		// Initial 4-way handshake
+		new ~tid;
+		
+		in(A_id);
+
+		let pat_msg1_contents = <'Header1', r, ANonce, cs> in
+		in(pat_msg1_contents);
+		
+		new ~SNonce;
+		let tptk = CalcPtk(<~pmk, ANonce, ~SNonce, A_id, ~S_id>) in
+		event S_ComputesPtk(~S_id, ~tid, tptk);
+		
+		let msg2_contents = <'Header2', r, ~SNonce, cs> in
+		out(<msg2_contents, mic(msg2_contents, <cs, kck(tptk)>)>);
+		
+		let msg3_contents = <'Header3', r+'1', ANonce, cs, senc(gtk, <cs, kek(tptk)>)> in
+		in(<msg3_contents, mic(msg3_contents, <cs, kck(tptk)>)>);
+
+		event S_ReceivesGtk(~S_id, ~tid, gtk);
+
+		let ptk = tptk in
+		
+		event S_RunningPtk(~S_id, A_id, ptk);
+		event S_RunningGtk(~S_id, A_id, <ANonce, ~SNonce, gtk>);
+		event S_RunningCs(~S_id, A_id, <ANonce, ~SNonce, cs>);
+		
+		let msg4_contents = <'Header4', r+'1', cs> in
+		out(<msg4_contents, mic(msg4_contents, <cs, kck(tptk)>)>);
+
+		event S_InstallsPtk(~S_id, ptk); // MLME-SETKEYS.request
+		event S_InstallsGtk(~S_id, gtk); // MLME-SETKEYS.request
+		
+		((
+			event S_CommitPtk(~S_id, A_id, ptk);
+			event S_CommitGtk(~S_id, A_id, <ANonce, ~SNonce, gtk>);
+			event S_CommitCs(~S_id, A_id, <ANonce, ~SNonce, cs>);
+			event S_Branch1()
+		) +
+		(
+			let msg3_rtx_contents = <'Header3', r+'1'+'1', ANonce, cs, senc(gtk2, <cs, kek(tptk)>)> in
+			in(<msg3_rtx_contents, mic(msg3_rtx_contents, <cs, kck(tptk)>)>);
+		
+			let ptk = tptk in
+				
+			event S_RunningPtk(~S_id, A_id, ptk);
+			event S_RunningGtk(~S_id, A_id, <ANonce, ~SNonce, gtk>);
+			event S_RunningCs(~S_id, A_id, <ANonce, ~SNonce, cs>);
+			
+			let msg4_rtx_contents = <'Header4', r+'1'+'1', cs> in
+			out(senc(<msg4_rtx_contents, mic(msg4_rtx_contents, <cs, kck(tptk)>)>, tk(ptk)));
+			
+			event S_InstallsPtk(~S_id, ptk); // MLME-SETKEYS.request
+			event S_InstallsGtk(~S_id, gtk2); // MLME-SETKEYS.request
+			
+			event S_CommitPtk(~S_id, A_id, ptk);
+			event S_CommitGtk(~S_id, A_id, <ANonce, ~SNonce, gtk>);
+			event S_CommitCs(~S_id, A_id, <ANonce, ~SNonce, cs>);	
+			event S_Branch2()
+		))
+	)
+	
+
+let Authenticator =
+	new ~A_id;
+	out(~A_id);
+	
+	!(
+		new ~tid;
+		in(<'AuthRequest', S_id>);
+		out(<'AuthResponse', S_id, 'CCMP'>);
+		
+		let cs = 'CCMP' in 
+		
+		in(<'AssociationRequest', S_id, cs>);
+		out(<'AssociationResponse', S_id, cs>);
+
+		event A_HasPmk(~A_id, ~pmk);
+	
+		// Initial 4-way handshake
+		
+		new ~r;
+		new ~ANonce;
+		
+		in(S_id);
+		
+		let pat_msg1_contents = <'Header1', ~r, ~ANonce, cs> in
+		out(pat_msg1_contents);
+
+		let ptk = CalcPtk(<~pmk, ~ANonce, SNonce, ~A_id, S_id>) in
+		let msg2_contents = <'Header2', ~r, SNonce, cs> in
+		in(<msg2_contents, mic(msg2_contents, <cs, kck(ptk)>)>);
+		
+		new ~gtk;
+		event A_GeneratesGtk(~gtk);
+		
+		event A_RunningPtk(~A_id, S_id, ptk);
+		event A_RunningGtk(~A_id, S_id, <~ANonce, SNonce, ~gtk>);
+		event A_RunningCs(~A_id, S_id, <~ANonce, SNonce, cs>);
+
+		event A_InstallsGtk(~gtk); // MLME-SETKEYS.request
+		
+		let msg3_contents = <'Header3', ~r+'1', ~ANonce, cs, senc(~gtk, <cs, kek(ptk)>)> in
+		out(<msg3_contents, mic(msg3_contents, <cs, kck(ptk)>)>);
+
+		((
+			let msg4_contents = <'Header4', ~r+'1', cs> in
+			in(<msg4_contents, mic(msg4_contents, <cs, kck(ptk)>)>);
+
+			event A_InstallsPtk(ptk); // MLME-SETKEYS.request
+
+			event A_CommitPtk(~A_id, S_id, ptk);
+			event A_CommitGtk(~A_id, S_id, <~ANonce, SNonce, ~gtk>);
+			event A_CommitCs(~A_id, S_id, <~ANonce, SNonce, cs>);			
+			event A_Branch1()
+		)+
+		(
+			let msg3_rtx_contents = <'Header3', ~r+'1'+'1', ~ANonce, cs, senc(~gtk, <cs, kek(ptk)>)> in
+			out(<msg3_rtx_contents, mic(msg3_rtx_contents, <cs, kck(ptk)>)>);
+			
+			// Msg4(r+1) could have been received here (ignored)
+			
+			let msg4_rtx_contents = <'Header4', ~r+'1'+'1', cs> in
+			in(senc(<msg4_rtx_contents, mic(msg4_rtx_contents, <cs, kck(ptk)>)>, tk(ptk)));
+
+			// Msg4(r+1) could have been received here (ignored)
+			
+			event A_InstallsPtk(ptk); // MLME-SETKEYS.request
+
+			event A_CommitPtk(~A_id, S_id, ptk);
+			event A_CommitGtk(~A_id, S_id, <~ANonce, SNonce, ~gtk>);
+			event A_CommitCs(~A_id, S_id, <~ANonce, SNonce, cs>);
+			event A_Branch2()
+		))
+	)
+
+
+// Main process starts here
+new ~pmk; (!Supplicant || Authenticator)
+
+
+lemma CorrectnessS1:
+exists-trace
+	"Ex #i. S_Branch1()@i"
+
+// This lemma is expected to be falisified after activating countermeasure.
+lemma CorrectnessS2:
+exists-trace
+	"Ex #i. S_Branch2()@i"		
+	
+lemma CorrectnessA1:
+exists-trace
+	"Ex #i. A_Branch1()@i"
+
+lemma CorrectnessA2:
+exists-trace
+	"Ex #i. A_Branch2()@i"
+
+// The KRACK attack does not exist.
+lemma NoKrackPtk:
+	"All id ptk #i. S_InstallsPtk(id, ptk)@i ==> not(Ex #j. S_InstallsPtk(id, ptk)@j & (j<i))"
+
+
+// Security properties specified in [IEEE 802.11, Sec. 12.6.14]
+
+// a) Confirm the existence of the PMK at the peer.
+lemma ConfirmPmk:
+all-traces
+	"All id1 id2 pmk1 pmk2 #t1 #t2. A_HasPmk(id1, pmk1)@t1 & S_HasPmk(id2, pmk2)@t2 ==> (pmk1=pmk2)"
+
+
+// b) Ensure that the security association keys are fresh.
+lemma FreshPtk: 
+all-traces
+	"All id tid1 tid2 ptk #t1 #t2. S_ComputesPtk(id, tid1, ptk)@t1 & S_ComputesPtk(id, tid2, ptk)@t2 ==> (tid1=tid2)"
+
+lemma FreshGtk: 
+all-traces
+	"All id tid1 tid2 gtk #t1 #t2. S_ReceivesGtk(id, tid1, gtk)@t1 & S_ReceivesGtk(id, tid2, gtk)@t2 ==> (tid1=tid2)"
+
+
+// c) Synchronize the installation of one or more temporal keys into the MAC.
+lemma AgreementPtk:
+all-traces
+	"(All X Y ptk #i. A_CommitPtk(X, Y, ptk)@i ==>
+		((Ex #j. S_RunningPtk(Y, X, ptk)@j & (j<i))
+		& not(Ex X2 Y2 #i2. A_CommitPtk(X2, Y2, ptk)@i2 & not(#i2=#i))
+		))
+	 &
+	 (All X Y ptk #i. S_CommitPtk(X, Y, ptk)@i ==>
+		((Ex #j. A_RunningPtk(Y, X, ptk)@j & (j<i))
+		& not(Ex X2 Y2 #i2. S_CommitPtk(X2, Y2, ptk)@i2 & not(#i2=#i))
+		))"
+
+lemma AgreementGtk:
+all-traces
+	"(All X Y gtk #i. A_CommitGtk(X, Y, gtk)@i ==>
+		((Ex #j. S_RunningGtk(Y, X, gtk)@j & (j<i))
+		& not(Ex X2 Y2 #i2. A_CommitGtk(X2, Y2, gtk)@i2 & not(#i2=#i))
+		))
+	 &
+	 (All X Y gtk #i. S_CommitGtk(X, Y, gtk)@i ==>
+		((Ex #j. A_RunningGtk(Y, X, gtk)@j & (j<i))
+		& not(Ex X2 Y2 #i2. S_CommitGtk(X2, Y2, gtk)@i2 & not(#i2=#i))
+		))"
+
+lemma SecretPtk:
+all-traces
+	"All id ptk #i. S_InstallsPtk(id, ptk)@i  ==> (not (Ex #j. K(ptk)@j))"
+
+lemma SecretGtk:
+all-traces
+	"All id gtk #i. S_InstallsGtk(id, gtk)@i  ==> (not (Ex #j. K(gtk)@j))"
+
+
+// d) Transfer the GTK from the Authenticator to the Supplicant.
+lemma SameGtk:
+all-traces
+	"All S gtk #i. S_InstallsGtk(S, gtk)@i  ==> (Ex #j. A_GeneratesGtk(gtk)@j & (j<i))" 
+
+
+// e) Confirm the selection of cipher suites.
+lemma AgreementCs:
+all-traces
+	"(All X Y cs #i. A_CommitCs(X, Y, cs)@i ==>
+		((Ex #j. S_RunningCs(Y, X, cs)@j & (j<i))
+		& not(Ex X2 Y2 #i2. A_CommitCs(X2, Y2, cs)@i2 & not(#i2=#i))
+		))
+	 &
+	 (All X Y cs #i. S_CommitCs(X, Y, cs)@i ==>
+		((Ex #j. A_RunningCs(Y, X, cs)@j & (j<i))
+		& not(Ex X2 Y2 #i2. S_CommitCs(X2, Y2, cs)@i2 & not(#i2=#i))
+		))"
+
+// f) Security Property to capture KRACK attack 
+lemma NoPtkReuse:
+all-traces
+	"All id ptk #i #j. S_InstallsPtk(id, ptk)@i & S_InstallsPtk(id, ptk)@j ==> (#i=#j)"
+
+lemma NoGtkReuse:
+all-traces
+	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
+
+
+
+// Uncomment the following to enforce restrictions and verify the proposed as well as standard properties
+// Enforcing f) as restrictions
+/*
+restriction RestNoPtkReuse:
+	"All id ptk #i #j. S_InstallsPtk(id, ptk)@i & S_InstallsPtk(id, ptk)@j ==> (#i=#j)"
+
+restriction RestNoGtkReuse:
+	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
+*/
+
+end
+
+
+/*
+WITHOUT RESTRICTIONS
+=============================================================================
+summary of summaries:
+
+analyzed: krack_fig4_011.sapic
+
+  CorrectnessS1 (exists-trace): verified (11 steps)
+  CorrectnessS2 (exists-trace): verified (13 steps)
+  CorrectnessA1 (exists-trace): verified (12 steps)
+  CorrectnessA2 (exists-trace): verified (14 steps)
+  NoKrackPtk (all-traces): falsified - found trace (16 steps)
+  ConfirmPmk (all-traces): verified (4 steps)
+  FreshPtk (all-traces): verified (4 steps)
+  FreshGtk (all-traces): verified (104 steps)
+  AgreementPtk (all-traces): verified (114 steps)
+  AgreementGtk (all-traces): verified (186 steps)
+  SecretPtk (all-traces): verified (77 steps)
+  SecretGtk (all-traces): verified (127 steps)
+  SameGtk (all-traces): verified (35 steps)
+  AgreementCs (all-traces): verified (114 steps)
+  NoPtkReuse (all-traces): falsified - found trace (17 steps)
+  NoGtkReuse (all-traces): falsified - found trace (17 steps)
+
+==============================================================================
+
+real    3m54.551s
+user    8m51.112s
+sys     1m16.558s
+
+*/
+
+==============================================================================
+summary of summaries:
+
+analyzed: krack_fig4_011.sapic
+
+  CorrectnessS1 (exists-trace): verified (11 steps)
+  CorrectnessS2 (exists-trace): falsified - no trace found (2 steps)
+  CorrectnessA1 (exists-trace): verified (12 steps)
+  CorrectnessA2 (exists-trace): verified (14 steps)
+  NoKrackPtk (all-traces): verified (2 steps)
+  ConfirmPmk (all-traces): verified (4 steps)
+  FreshPtk (all-traces): verified (4 steps)
+  FreshGtk (all-traces): verified (104 steps)
+  AgreementPtk (all-traces): verified (91 steps)
+  AgreementGtk (all-traces): verified (127 steps)
+  SecretPtk (all-traces): verified (22 steps)
+  SecretGtk (all-traces): verified (42 steps)
+  SameGtk (all-traces): verified (14 steps)
+  AgreementCs (all-traces): verified (91 steps)
+  NoPtkReuse (all-traces): verified (2 steps)
+  NoGtkReuse (all-traces): verified (2 steps)
+
+==============================================================================
+
+real    0m30.998s
+user    1m13.637s
+sys     0m11.054s
+/*
+WITH RESTRICTIONS
+
+*/
