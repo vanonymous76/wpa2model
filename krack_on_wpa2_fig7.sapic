@@ -189,8 +189,8 @@ new ~pmk; (!Supplicant || Authenticator)
 
 
 // Uncomment to apply countermeasure for GTK.
-restriction CountermeasureKrackGtk:
-	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
+//restriction CountermeasureKrackGtk:
+//	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
 
 restriction RestrictionCtr:
 	"All r r2 #i #j. S_ReplayCtr(r)@i & S_ReplayCtr(r2)@j & (i<j) ==> (Ex x. r+x=r2)"
@@ -254,7 +254,7 @@ end
 
 
 /*
-Without countermeasure
+With countermeasure
 ==============================================================================
 summary of summaries:
 
