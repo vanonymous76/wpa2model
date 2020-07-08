@@ -12,7 +12,7 @@
 		kck = Key Confirmation Key
 		kek = Key Encryption Key
 		tk = Temporal Key
-	gtk = Group Transient Key
+	gtk = Group Temporal Key
 	
 	A_  = Events only in authenticator process
 	S_  = Events only in supplicant process
@@ -84,7 +84,7 @@ let Supplicant =
 			let m = <group_msg1_contents, mic(group_msg1_contents, kck(ptk))> in
 			in(senc(m, tk(ptk)));
 			event Receive(A_id, ~S_id, 'Message1', r2, group_msg1_contents);
-			event ReceivesCiphertext(~S_id, m, tk(ptk));			
+			event DcpReceive(~S_id, m, tk(ptk));			
 
 			event Running(~S_id, A_id, <~SNonce, ANonce, r2, ptk, gtk2>);
 
@@ -96,7 +96,7 @@ let Supplicant =
 			let group_msg2_contents = <'GrkHeader2', r2> in
 			let m = <group_msg2_contents, mic(group_msg2_contents, kck(ptk))> in
 			event Send(~S_id, A_id, 'Message2', r2, group_msg2_contents);
-			event SendsCiphertext(~S_id, m, tk(ptk));
+			event DcpSend(~S_id, m, tk(ptk));
 			out(senc(m, tk(ptk)));
 			
 			event S_Branch1()
@@ -148,7 +148,7 @@ let Authenticator =
 			
 			let group_msg1_contents = <'GrkHeader1', ~r+'1'+'1', senc(~gtk2, kek(ptk))> in
 			let m = <group_msg1_contents, mic(group_msg1_contents, kck(ptk))> in
-			event SendsCiphertext(~A_id, m, tk(ptk));
+			event DcpSend(~A_id, m, tk(ptk));
 			event Send(~A_id, S_id, 'Message1', ~r+'1'+'1', group_msg1_contents);
 			out(senc(m, tk(ptk)));
 			
@@ -159,7 +159,7 @@ let Authenticator =
 				let m = <group_msg2_contents, mic(group_msg2_contents, kck(ptk))> in
 				in(senc(m, tk(ptk)));
 				event Receive(S_id, ~A_id, 'Message2', ~r+'1'+'1', group_msg2_contents);
-				event ReceivesCiphertext(~A_id, m, tk(ptk));
+				event DcpReceive(~A_id, m, tk(ptk));
 		
 				//event Commit(~A_id, S_id, <SNonce, ~ANonce, ~r+'1'+'1', ptk, ~gtk2>);
 				event A_Branch1()
@@ -167,7 +167,7 @@ let Authenticator =
 			(
 				let group_msg1_rtx_contents = <'GrkHeader1', ~r+'1'+'1'+'1', senc(~gtk2, kek(ptk))> in
 				let m = <group_msg1_rtx_contents, mic(group_msg1_rtx_contents, kck(ptk))> in
-				event SendsCiphertext(~A_id, m, tk(ptk));
+				event DcpSend(~A_id, m, tk(ptk));
 				event Send(~A_id, S_id, 'Message1', ~r+'1'+'1'+'1', group_msg1_rtx_contents);
 				out(senc(m, tk(ptk)));
 
@@ -175,7 +175,7 @@ let Authenticator =
 				let m = <group_msg2_rtx_contents, mic(group_msg2_rtx_contents, kck(ptk))> in
 				in(senc(m, tk(ptk)));
 				event Receive(S_id, ~A_id, 'Message2', ~r+'1'+'1'+'1', group_msg2_rtx_contents);
-				event ReceivesCiphertext(~A_id, m, tk(ptk));
+				event DcpReceive(~A_id, m, tk(ptk));
 
 				//event Commit(~A_id, S_id, <SNonce, ~ANonce, ~r+'1'+'1'+'1', ptk, ~gtk2>);
 				event A_Branch2()
@@ -189,17 +189,16 @@ new ~pmk; (!Supplicant || Authenticator)
 
 
 // Uncomment to apply countermeasure for GTK.
-/*
 restriction CountermeasureKrackGtk:
 	"All id gtk #i #j. S_InstallsGtk(id, gtk)@i & S_InstallsGtk(id, gtk)@j ==> (#i=#j)"
-*/
+
 restriction RestrictionCtr:
 	"All r r2 #i #j. S_ReplayCtr(r)@i & S_ReplayCtr(r2)@j & (i<j) ==> (Ex x. r+x=r2)"
 
 lemma DataConfProtocolInvariant [sources]:
-	"All id1 m k #i. ReceivesCiphertext(id1, m, k)@i ==> 
+	"All id1 m k #i. DcpReceive(id1, m, k)@i ==> 
 		( (Ex #j. KU(m)@j & (j<i))
-		| (Ex id2 #j. SendsCiphertext(id2, m, k)@j) 
+		| (Ex id2 #j. DcpSend(id2, m, k)@j) 
 		)"
 
 lemma CorrectnessS1:
@@ -251,8 +250,6 @@ all-traces
 		( (Ex #j. Running(Y, X, t)@j & (j<i))
 		& not(Ex X2 Y2 #i2. Commit(X2, Y2, t)@i2 & not(#i2=#i))
 		)"
-
-
 end
 
 
@@ -276,35 +273,8 @@ analyzed: krack_fig7_015.sapic
   Agreement (all-traces): verified (26 steps)
 
 ==============================================================================
+real    9m24.017s
+user    9m9.161s
+sys     0m47.150s
 
-real    24m13.961s
-user    51m20.976s
-sys     8m48.735s
-
-*/
-
-
-/*
-With countermeasure
-==============================================================================
-summary of summaries:
-analyzed: krack_fig7_015.sapic
-
-  DataConfProtocolInvariant (all-traces): verified (37 steps)
-  CorrectnessS1 (exists-trace): verified (13 steps)
-  CorrectnessA1 (exists-trace): verified (14 steps)
-  CorrectnessA2 (exists-trace): verified (14 steps)
-  CorrectnessNoReplay (all-traces): verified (16 steps)
-  NoKrackGtk (all-traces): verified (2 steps)
-  SecretPtk (all-traces): verified (19 steps)
-  SecretGtk (all-traces): verified (258 steps)
-  ReceivedGtkSameAsGenerated (all-traces): verified (80 steps)
-  FreshPtk (all-traces): verified (4 steps)
-  Agreement (all-traces): verified (26 steps)
-
-==============================================================================
-
-real    5m20.831s
-user    11m36.875s
-sys     2m12.963s
 */
